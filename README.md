@@ -1,3 +1,9 @@
+> **Note:** This is a personal fork of [`openai/codex`](https://github.com/openai/codex).
+> The only intentional change versus upstream is **Windows remote control daemon lifecycle support** — see [PR #1](https://github.com/antoniooreany/codex-fork/pull/1).
+> Everything below this notice comes straight from the upstream README and is not maintained in this fork.
+
+---
+
 <p align="center"><strong>Codex CLI</strong> is a coding agent from OpenAI that runs locally on your computer.
 <p align="center">
   <img src="https://github.com/openai/codex/blob/main/.github/codex-cli-splash.png" alt="Codex CLI splash" width="80%" />
