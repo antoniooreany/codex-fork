@@ -15,7 +15,8 @@ process and file-locking primitives; Windows uses detached process creation,
 Windows process identity checks, and Win32 file locking. Windows bootstrap
 does not launch the Unix standalone installer updater, so `autoUpdateEnabled`
 is `false` there. The managed binary must already exist at the platform path
-under `CODEX_HOME`.
+under `CODEX_HOME`: `packages/standalone/current/codex` on Unix or
+`packages/standalone/current/bin/codex.exe` on Windows.
 
 ## Commands
 
@@ -36,7 +37,7 @@ running app-server version when applicable.
 
 ## Bootstrap flow
 
-For a new remote machine:
+For a new remote machine on Unix:
 
 ```sh
 curl -fsSL https://chatgpt.com/codex/install.sh | sh
@@ -47,7 +48,8 @@ $HOME/.codex/packages/standalone/current/codex app-server daemon bootstrap --rem
 settings under `CODEX_HOME/app-server-daemon/` and starts app-server as a
 pidfile-backed detached process. On Unix it also launches a detached updater
 loop. On Windows, update the managed `codex.exe` installation separately and
-use `restart` to load the new binary.
+use `restart` to load the new binary. The Windows executable is expected at
+`CODEX_HOME/packages/standalone/current/bin/codex.exe`.
 
 ## Installation and update cases
 
@@ -56,13 +58,13 @@ installer and always launches the managed binary under `CODEX_HOME`.
 
 | Situation | What starts | Does this daemon fetch new binaries? | Does a running app-server eventually move to a newer binary on its own? |
 | --- | --- | --- | --- |
-| `install.sh` has run, but only `start` is used | `start` uses `CODEX_HOME/packages/standalone/current/codex` | No | No. The managed path is used when starting or restarting, but no updater is installed. |
-| `install.sh` has run, then `bootstrap` is used | The pidfile backend uses `CODEX_HOME/packages/standalone/current/codex` | Yes. Bootstrap launches a detached updater loop that runs `install.sh` hourly. | Yes, while that updater process is alive and app-server is already running. After a successful fetch, the updater restarts app-server with the refreshed binary and only then replaces its own process image. |
+| standalone install has run, but only `start` is used | `start` uses `CODEX_HOME/packages/standalone/current/codex` on Unix or `CODEX_HOME/packages/standalone/current/bin/codex.exe` on Windows | No | No. The managed path is used when starting or restarting, but no updater is installed. |
+| standalone install has run, then `bootstrap` is used on Unix | The pidfile backend uses `CODEX_HOME/packages/standalone/current/codex` | Yes. Bootstrap launches a detached updater loop that runs `install.sh` hourly. | Yes, while that updater process is alive and app-server is already running. After a successful fetch, the updater restarts app-server with the refreshed binary and only then replaces its own process image. |
 | Some other tool updates the managed binary path | The next fresh start or restart uses the updated file at that path | Only if `bootstrap` is active, because the updater still runs `install.sh` on its normal cadence. | Without `bootstrap`, no. With `bootstrap`, the next successful updater pass compares the managed binary contents after `install.sh` runs; if app-server is running and they differ from the updater's current image, it refreshes app-server first and then itself. |
 
 On Windows, `bootstrap` does not fetch or replace binaries. An external
 Windows installer or package workflow must update
-`CODEX_HOME/packages/standalone/current/codex.exe`; run `restart` afterwards
+`CODEX_HOME/packages/standalone/current/bin/codex.exe`; run `restart` afterwards
 to load the new binary.
 
 ### Standalone installs

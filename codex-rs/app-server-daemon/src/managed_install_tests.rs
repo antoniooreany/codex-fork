@@ -30,14 +30,18 @@ fn executable_identity_uses_binary_contents() {
 }
 
 #[test]
-fn managed_codex_path_uses_platform_executable_name() {
+fn managed_codex_path_uses_platform_install_layout() {
     let path = managed_codex_bin(std::path::Path::new("codex-home"));
-    assert_eq!(
-        path.file_name().and_then(std::ffi::OsStr::to_str),
-        if cfg!(windows) {
-            Some("codex.exe")
-        } else {
-            Some("codex")
-        }
-    );
+    let mut expected = std::path::PathBuf::from("codex-home")
+        .join("packages")
+        .join("standalone")
+        .join("current");
+    if cfg!(windows) {
+        expected.push("bin");
+        expected.push("codex.exe");
+    } else {
+        expected.push("codex");
+    }
+
+    assert_eq!(path, expected);
 }
