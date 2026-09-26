@@ -1,11 +1,11 @@
 use std::path::Path;
 use std::path::PathBuf;
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use anyhow::Context;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use anyhow::Result;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use anyhow::anyhow;
 #[cfg(unix)]
 use sha2::Digest;
@@ -13,15 +13,18 @@ use sha2::Digest;
 use sha2::Sha256;
 #[cfg(unix)]
 use tokio::fs;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use tokio::process::Command;
 
 pub(crate) fn managed_codex_bin(codex_home: &Path) -> PathBuf {
-    codex_home
+    let mut path = codex_home
         .join("packages")
         .join("standalone")
-        .join("current")
-        .join(managed_codex_file_name())
+        .join("current");
+    if cfg!(windows) {
+        path.push("bin");
+    }
+    path.join(managed_codex_file_name())
 }
 
 #[cfg(unix)]
@@ -34,7 +37,7 @@ pub(crate) async fn resolved_managed_codex_bin(codex_bin: &Path) -> Result<PathB
     })
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(crate) async fn managed_codex_version(codex_bin: &Path) -> Result<String> {
     let output = Command::new(codex_bin)
         .arg("--version")
@@ -88,7 +91,7 @@ fn managed_codex_file_name() -> &'static str {
     if cfg!(windows) { "codex.exe" } else { "codex" }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn parse_codex_version(output: &str) -> Result<String> {
     let version = output
         .split_whitespace()
@@ -98,6 +101,6 @@ fn parse_codex_version(output: &str) -> Result<String> {
     Ok(version.to_string())
 }
 
-#[cfg(all(test, unix))]
+#[cfg(all(test, any(unix, windows)))]
 #[path = "managed_install_tests.rs"]
 mod tests;

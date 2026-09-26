@@ -1,21 +1,21 @@
 use std::io::SeekFrom;
 use std::path::Path;
 use std::path::PathBuf;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::process::Stdio;
 use std::time::Duration;
 
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::bail;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use codex_app_server_transport::REMOTE_CONTROL_DISABLED_ENV_VAR;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::fs;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncSeekExt;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use tokio::process::Command;
 use tokio::time::sleep;
 
@@ -115,7 +115,7 @@ impl PidBackend {
         }
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(crate) async fn start(&self) -> Result<Option<u32>> {
         if let Some(parent) = self.pid_file.parent() {
             fs::create_dir_all(parent)
@@ -182,6 +182,14 @@ impl PidBackend {
             }
         }
 
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::System::Threading::CREATE_NEW_PROCESS_GROUP;
+            use windows_sys::Win32::System::Threading::DETACHED_PROCESS;
+
+            command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+        }
+
         let child = match command.spawn() {
             Ok(child) => child,
             Err(err) => {
@@ -232,7 +240,7 @@ impl PidBackend {
         Ok(Some(pid))
     }
 
-    #[cfg(not(unix))]
+    #[cfg(all(not(unix), not(windows)))]
     pub(crate) async fn start(&self) -> Result<Option<u32>> {
         bail!("pid-managed app-server startup is unsupported on this platform")
     }
@@ -392,7 +400,7 @@ impl PidBackend {
         Ok(reservation_lock)
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     async fn open_stderr_log(&self) -> Result<fs::File> {
         let stderr_log_file = stderr_log_file_for_pid_file(&self.pid_file);
         fs::OpenOptions::new()
@@ -409,7 +417,7 @@ impl PidBackend {
             })
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn command_args(&self) -> Vec<&'static str> {
         match self.command_kind {
             PidCommandKind::AppServer {
@@ -422,7 +430,7 @@ impl PidBackend {
         }
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn command_env(&self) -> Option<(&'static str, &'static str)> {
         match self.command_kind {
             PidCommandKind::AppServer {
@@ -558,17 +566,69 @@ fn force_terminate_process_group(pid: u32) -> Result<()> {
     Err(err).with_context(|| format!("failed to force terminate pid-managed updater group {pid}"))
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn process_exists(pid: u32) -> bool {
+    use windows_sys::Win32::System::Threading::OpenProcess;
+    use windows_sys::Win32::System::Threading::PROCESS_QUERY_LIMITED_INFORMATION;
+
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if handle == 0 {
+        return false;
+    }
+    unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
+    true
+}
+
+#[cfg(windows)]
+fn terminate_process(pid: u32) -> Result<()> {
+    use windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED;
+    use windows_sys::Win32::System::Threading::OpenProcess;
+    use windows_sys::Win32::System::Threading::PROCESS_TERMINATE;
+    use windows_sys::Win32::System::Threading::TerminateProcess;
+
+    let handle = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid) };
+    if handle == 0 {
+        let err = std::io::Error::last_os_error();
+        if err.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) {
+            return Ok(());
+        }
+        return Err(err).with_context(|| format!("failed to open pid-managed app server {pid}"));
+    }
+    let result = unsafe { TerminateProcess(handle, 0) };
+    let error = if result == 0 {
+        Some(std::io::Error::last_os_error())
+    } else {
+        None
+    };
+    unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
+    if let Some(err) = error {
+        return Err(err)
+            .with_context(|| format!("failed to terminate pid-managed app server {pid}"));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn force_terminate_process(pid: u32) -> Result<()> {
+    terminate_process(pid)
+}
+
+#[cfg(windows)]
+fn force_terminate_process_group(pid: u32) -> Result<()> {
+    terminate_process(pid)
+}
+
+#[cfg(all(not(unix), not(windows)))]
 fn terminate_process(_pid: u32) -> Result<()> {
     bail!("pid-managed app-server shutdown is unsupported on this platform")
 }
 
-#[cfg(not(unix))]
+#[cfg(all(not(unix), not(windows)))]
 fn force_terminate_process(_pid: u32) -> Result<()> {
     bail!("pid-managed app-server shutdown is unsupported on this platform")
 }
 
-#[cfg(not(unix))]
+#[cfg(all(not(unix), not(windows)))]
 fn force_terminate_process_group(_pid: u32) -> Result<()> {
     bail!("pid-managed updater shutdown is unsupported on this platform")
 }
@@ -586,7 +646,7 @@ async fn process_matches_record(record: &PidRecord) -> Result<bool> {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(all(not(unix), not(windows)))]
 async fn process_matches_record(_record: &PidRecord) -> Result<bool> {
     Ok(false)
 }
@@ -615,12 +675,43 @@ fn try_lock_file(file: &fs::File) -> Result<bool> {
     Err(err).context("failed to lock pid reservation")
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn try_lock_file(file: &fs::File) -> Result<bool> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::ERROR_LOCK_VIOLATION;
+    use windows_sys::Win32::Storage::FileSystem::LOCKFILE_EXCLUSIVE_LOCK;
+    use windows_sys::Win32::Storage::FileSystem::LOCKFILE_FAIL_IMMEDIATELY;
+    use windows_sys::Win32::Storage::FileSystem::LockFileEx;
+    use windows_sys::Win32::System::IO::OVERLAPPED;
+
+    let mut overlapped = unsafe { std::mem::zeroed::<OVERLAPPED>() };
+    let result = unsafe {
+        LockFileEx(
+            file.as_raw_handle() as isize,
+            LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+            0,
+            u32::MAX,
+            u32::MAX,
+            &mut overlapped,
+        )
+    };
+    if result != 0 {
+        return Ok(true);
+    }
+
+    let err = std::io::Error::last_os_error();
+    if err.raw_os_error() == Some(ERROR_LOCK_VIOLATION as i32) {
+        return Ok(false);
+    }
+    Err(err).context("failed to lock pid reservation")
+}
+
+#[cfg(all(not(unix), not(windows)))]
 fn try_lock_file(_file: &fs::File) -> Result<bool> {
     bail!("pid-managed app-server startup is unsupported on this platform")
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 async fn reservation_lock_is_active(path: &Path) -> Result<bool> {
     let file = match fs::OpenOptions::new()
         .write(true)
@@ -641,12 +732,12 @@ async fn reservation_lock_is_active(path: &Path) -> Result<bool> {
     Ok(!try_lock_file(&file)?)
 }
 
-#[cfg(not(unix))]
+#[cfg(all(not(unix), not(windows)))]
 async fn reservation_lock_is_active(_path: &Path) -> Result<bool> {
     Ok(false)
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 async fn inspect_empty_pid_reservation(
     pid_path: &Path,
     lock_path: &Path,
@@ -689,7 +780,7 @@ async fn inspect_empty_pid_reservation(
     Ok(EmptyPidReservation::Record(record))
 }
 
-#[cfg(not(unix))]
+#[cfg(all(not(unix), not(windows)))]
 async fn inspect_empty_pid_reservation(
     _pid_path: &Path,
     _lock_path: &Path,
@@ -697,26 +788,83 @@ async fn inspect_empty_pid_reservation(
     Ok(EmptyPidReservation::Stale)
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 async fn read_process_start_time(pid: u32) -> Result<String> {
-    let output = Command::new("ps")
-        .args(["-p", &pid.to_string(), "-o", "lstart="])
-        .output()
-        .await
-        .context("failed to invoke ps for pid-managed app server")?;
-    if !output.status.success() {
-        bail!("failed to read start time for pid-managed app server {pid}");
+    #[cfg(unix)]
+    {
+        let output = Command::new("ps")
+            .args(["-p", &pid.to_string(), "-o", "lstart="])
+            .output()
+            .await
+            .context("failed to invoke ps for pid-managed app server")?;
+        if !output.status.success() {
+            bail!("failed to read start time for pid-managed app server {pid}");
+        }
+
+        let start_time = String::from_utf8(output.stdout)
+            .context("pid-managed app server start time was not utf-8")?;
+        let start_time = start_time.trim();
+        if start_time.is_empty() {
+            bail!("pid-managed app server {pid} has no recorded start time");
+        }
+        Ok(start_time.to_string())
     }
 
-    let start_time = String::from_utf8(output.stdout)
-        .context("pid-managed app server start time was not utf-8")?;
-    let start_time = start_time.trim();
-    if start_time.is_empty() {
-        bail!("pid-managed app server {pid} has no recorded start time");
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::Threading::GetProcessTimes;
+        use windows_sys::Win32::System::Threading::OpenProcess;
+        use windows_sys::Win32::System::Threading::PROCESS_QUERY_LIMITED_INFORMATION;
+
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if handle == 0 {
+            return Err(std::io::Error::last_os_error())
+                .with_context(|| format!("failed to open pid-managed app server process {pid}"));
+        }
+
+        let mut creation_time = unsafe { std::mem::zeroed() };
+        let mut exit_time = unsafe { std::mem::zeroed() };
+        let mut kernel_time = unsafe { std::mem::zeroed() };
+        let mut user_time = unsafe { std::mem::zeroed() };
+        let result = unsafe {
+            GetProcessTimes(
+                handle,
+                &mut creation_time,
+                &mut exit_time,
+                &mut kernel_time,
+                &mut user_time,
+            )
+        };
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
+        if result == 0 {
+            return Err(std::io::Error::last_os_error()).with_context(|| {
+                format!("failed to read start time for pid-managed app server {pid}")
+            });
+        }
+
+        let ticks = (u64::from(creation_time.dwHighDateTime) << 32)
+            | u64::from(creation_time.dwLowDateTime);
+        Ok(ticks.to_string())
     }
-    Ok(start_time.to_string())
+}
+
+#[cfg(windows)]
+async fn process_matches_record(record: &PidRecord) -> Result<bool> {
+    if !process_exists(record.pid) {
+        return Ok(false);
+    }
+
+    match read_process_start_time(record.pid).await {
+        Ok(start_time) => Ok(start_time == record.process_start_time),
+        Err(_err) if !process_exists(record.pid) => Ok(false),
+        Err(err) => Err(err),
+    }
 }
 
 #[cfg(all(test, unix))]
 #[path = "pid_tests.rs"]
+mod tests;
+
+#[cfg(all(test, windows))]
+#[path = "pid_windows_tests.rs"]
 mod tests;

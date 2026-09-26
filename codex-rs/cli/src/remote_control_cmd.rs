@@ -112,10 +112,7 @@ async fn run_foreground_remote_control(
     arg0_paths: Arg0DispatchPaths,
     root_config_overrides: CliConfigOverrides,
 ) -> anyhow::Result<()> {
-    let socket_dir = tempfile::Builder::new()
-        .prefix("codex-rc-")
-        .tempdir_in("/tmp")
-        .or_else(|_| tempfile::tempdir())
+    let socket_dir = create_foreground_socket_directory()
         .context("failed to create private app-server socket directory")?;
     let socket_path = socket_dir.path().join("rc.sock");
     let socket_path = AbsolutePathBuf::from_absolute_path(&socket_path)
@@ -180,6 +177,23 @@ async fn run_foreground_remote_control(
     let result = wait_for_foreground_app_server(app_server_task, stop_rx).await;
     stop_signal_task.abort();
     result
+}
+
+fn create_foreground_socket_directory() -> std::io::Result<tempfile::TempDir> {
+    let mut tempdir_builder = tempfile::Builder::new();
+    let builder = tempdir_builder.prefix("codex-rc-");
+
+    #[cfg(unix)]
+    {
+        builder
+            .tempdir_in("/tmp")
+            .or_else(|_| tempfile::tempdir())
+    }
+
+    #[cfg(not(unix))]
+    {
+        builder.tempdir()
+    }
 }
 
 fn foreground_stop_signal() -> (watch::Receiver<bool>, JoinHandle<()>) {
@@ -506,6 +520,12 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+
+    #[test]
+    fn foreground_socket_directory_uses_platform_temp_root() {
+        let socket_dir = create_foreground_socket_directory().expect("socket directory");
+        assert!(socket_dir.path().starts_with(std::env::temp_dir()));
+    }
 
     fn remote_control_status(
         status: RemoteControlConnectionStatus,
