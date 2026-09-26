@@ -10,9 +10,12 @@ machines that should expose app-server with `remote_control` enabled.
 
 ## Platform support
 
-The current daemon implementation is Unix-only. It uses pidfile-backed
-daemonization plus Unix process and file-locking primitives, and does not yet
-support Windows lifecycle management.
+The daemon supports Unix and Windows lifecycle management. Unix uses native
+process and file-locking primitives; Windows uses detached process creation,
+Windows process identity checks, and Win32 file locking. Windows bootstrap
+does not launch the Unix standalone installer updater, so `autoUpdateEnabled`
+is `false` there. The managed binary must already exist at the platform path
+under `CODEX_HOME`.
 
 ## Commands
 
@@ -41,19 +44,26 @@ $HOME/.codex/packages/standalone/current/codex app-server daemon bootstrap --rem
 ```
 
 `bootstrap` requires the standalone managed install. It records the daemon
-settings under `CODEX_HOME/app-server-daemon/`, starts app-server as a
-pidfile-backed detached process, and launches a detached updater loop.
+settings under `CODEX_HOME/app-server-daemon/` and starts app-server as a
+pidfile-backed detached process. On Unix it also launches a detached updater
+loop. On Windows, update the managed `codex.exe` installation separately and
+use `restart` to load the new binary.
 
 ## Installation and update cases
 
-The daemon assumes Codex is installed through `install.sh` and always launches
-the standalone managed binary under `CODEX_HOME`.
+The daemon assumes Codex is installed through the platform's standalone
+installer and always launches the managed binary under `CODEX_HOME`.
 
 | Situation | What starts | Does this daemon fetch new binaries? | Does a running app-server eventually move to a newer binary on its own? |
 | --- | --- | --- | --- |
 | `install.sh` has run, but only `start` is used | `start` uses `CODEX_HOME/packages/standalone/current/codex` | No | No. The managed path is used when starting or restarting, but no updater is installed. |
 | `install.sh` has run, then `bootstrap` is used | The pidfile backend uses `CODEX_HOME/packages/standalone/current/codex` | Yes. Bootstrap launches a detached updater loop that runs `install.sh` hourly. | Yes, while that updater process is alive and app-server is already running. After a successful fetch, the updater restarts app-server with the refreshed binary and only then replaces its own process image. |
 | Some other tool updates the managed binary path | The next fresh start or restart uses the updated file at that path | Only if `bootstrap` is active, because the updater still runs `install.sh` on its normal cadence. | Without `bootstrap`, no. With `bootstrap`, the next successful updater pass compares the managed binary contents after `install.sh` runs; if app-server is running and they differ from the updater's current image, it refreshes app-server first and then itself. |
+
+On Windows, `bootstrap` does not fetch or replace binaries. An external
+Windows installer or package workflow must update
+`CODEX_HOME/packages/standalone/current/codex.exe`; run `restart` afterwards
+to load the new binary.
 
 ### Standalone installs
 
@@ -84,7 +94,7 @@ other tool updates the managed binary path:
 ## Lifecycle semantics
 
 `start` is idempotent and returns after app-server is ready to answer the normal
-JSON-RPC initialize handshake on the Unix control socket.
+JSON-RPC initialize handshake on the private local control socket.
 
 `restart` stops any managed daemon and starts it again.
 
@@ -93,11 +103,15 @@ for future starts. If a managed app-server is already running, they restart it
 so the new setting takes effect immediately.
 
 Top-level `codex remote-control` bootstraps with `--remote-control` when the
-updater loop is not running. Otherwise it enables remote control and starts the
-daemon normally.
+managed daemon is not already running. On Unix this also starts the updater
+loop; on Windows it enables remote control on the existing managed process.
 
-`stop` sends a graceful termination request first, then sends a second
-termination signal after the grace window if the process is still alive.
+`stop` validates the recorded PID and process start time before terminating the
+managed process. Unix sends a graceful termination request first and escalates
+after the grace window. Windows has no portable graceful signal for this
+detached process, so it uses the validated Win32 process handle for direct
+termination and keeps the existing bounded wait without affecting unrelated
+processes.
 
 All mutating lifecycle commands are serialized per `CODEX_HOME`, so a concurrent
 `start`, `restart`, `enable-remote-control`, `disable-remote-control`, `stop`,

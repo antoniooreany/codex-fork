@@ -2,7 +2,10 @@
 
 ## Status
 
-Draft for review. No implementation is included in this document.
+Implementation in progress on `fix/windows-remote-control-daemon`. Windows
+daemon lifecycle support is implemented in the personal fork; automatic
+standalone binary updates remain Unix-only until a Windows installer workflow
+is available.
 
 ## Motivation
 
@@ -56,8 +59,9 @@ currently Unix-only process lifecycle operations. The backend will:
 - redirect stderr to the existing daemon log;
 - poll readiness through the existing local control socket;
 - stop the process only after validating the recorded PID/start time;
-- use graceful termination first, followed by a bounded force-termination
-  fallback.
+- use the validated Win32 process handle for direct termination, followed by
+  the existing bounded wait. A portable graceful signal is not available for
+  this detached process because the backend has no shutdown RPC.
 
 The Unix implementation remains the reference path and retains its existing
 `setsid`, signal, updater, and process-reaping behavior.
@@ -84,7 +88,7 @@ Replace the generic Unix-only error on Windows with actionable errors for:
 - inability to create or reserve daemon state;
 - readiness timeout;
 - stale PID record;
-- graceful stop timeout and force-stop result.
+- Windows termination timeout and force-stop result.
 
 Error messages must not include credentials or unrelated command-line secrets.
 
